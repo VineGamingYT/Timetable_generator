@@ -1,8 +1,37 @@
 import React, { useState, useEffect } from 'react';
-import { Plus, Save, Download, Edit3, Clock, Calendar, Users, User, AlertCircle, CheckCircle, RefreshCw, Sun, Moon, Sparkles, X, ChevronDown, ChevronUp, Info } from 'lucide-react';
+import { Plus, Save, Download, Edit3, Clock, Calendar, Users, User, AlertCircle, CheckCircle, RefreshCw, Sun, Moon, Sparkles, X, ChevronDown, ChevronUp, Info, LogOut, Mail, Lock, Eye, EyeOff, LogIn, UserPlus } from 'lucide-react';
+import { auth, db } from './firebase';
+import { 
+  createUserWithEmailAndPassword, 
+  signInWithEmailAndPassword,
+  signOut,
+  onAuthStateChanged 
+} from 'firebase/auth';
+import { 
+  doc, 
+  setDoc, 
+  getDoc,
+  collection,
+  addDoc,
+  serverTimestamp 
+} from 'firebase/firestore';
 
-const TimetableGenerator = () => {
+const IntegratedTimetableApp = () => {
+  const [isAuthenticated, setIsAuthenticated] = useState(false);
+  const [currentUser, setCurrentUser] = useState(null);
+  const [isLogin, setIsLogin] = useState(true);
+  const [showPassword, setShowPassword] = useState(false);
   const [darkMode, setDarkMode] = useState(false);
+  const [authLoading, setAuthLoading] = useState(true);
+  const [formData, setFormData] = useState({
+    name: '',
+    email: '',
+    password: '',
+    confirmPassword: ''
+  });
+  const [authErrors, setAuthErrors] = useState({});
+  
+  // Timetable Generator States
   const [currentStep, setCurrentStep] = useState(1);
   const [timetableType, setTimetableType] = useState('');
   const [showSuccessAnimation, setShowSuccessAnimation] = useState(false);
@@ -21,7 +50,20 @@ const TimetableGenerator = () => {
     balanceWorkload: true
   });
 
-  // Apply dark mode to body
+  const [currentActivity, setCurrentActivity] = useState({
+    name: '',
+    duration: 1,
+    priority: 'medium',
+    preferredDays: [],
+    preferredTimes: [],
+    avoidTimes: [],
+    instructor: '',
+    room: '',
+    color: 'blue',
+    description: '',
+    recurring: false
+  });
+
   useEffect(() => {
     if (darkMode) {
       document.documentElement.classList.add('dark');
@@ -29,6 +71,28 @@ const TimetableGenerator = () => {
       document.documentElement.classList.remove('dark');
     }
   }, [darkMode]);
+
+  useEffect(() => {
+    const unsubscribe = onAuthStateChanged(auth, async (user) => {
+      if (user) {
+        const userDoc = await getDoc(doc(db, 'users', user.uid));
+        if (userDoc.exists()) {
+          setCurrentUser({
+            uid: user.uid,
+            email: user.email,
+            name: userDoc.data().name
+          });
+          setIsAuthenticated(true);
+        }
+      } else {
+        setIsAuthenticated(false);
+        setCurrentUser(null);
+      }
+      setAuthLoading(false);
+    });
+
+    return () => unsubscribe();
+  }, []);
 
   const timetableTypes = [
     { 
@@ -69,20 +133,6 @@ const TimetableGenerator = () => {
 
   const days = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
 
-  const [currentActivity, setCurrentActivity] = useState({
-    name: '',
-    duration: 1,
-    priority: 'medium',
-    preferredDays: [],
-    preferredTimes: [],
-    avoidTimes: [],
-    instructor: '',
-    room: '',
-    color: 'blue',
-    description: '',
-    recurring: false
-  });
-
   const priorityLevels = ['high', 'medium', 'low'];
   const colors = [
     { name: 'blue', light: 'bg-blue-200', dark: 'bg-blue-700', border: 'border-blue-400' },
@@ -95,6 +145,135 @@ const TimetableGenerator = () => {
     { name: 'orange', light: 'bg-orange-200', dark: 'bg-orange-700', border: 'border-orange-400' }
   ];
 
+  // Auth Functions
+  const validateAuthForm = () => {
+    const newErrors = {};
+
+    if (!isLogin && !formData.name.trim()) {
+      newErrors.name = 'Name is required';
+    }
+
+    if (!formData.email.trim()) {
+      newErrors.email = 'Email is required';
+    } else if (!/\S+@\S+\.\S+/.test(formData.email)) {
+      newErrors.email = 'Email is invalid';
+    }
+
+    if (!formData.password) {
+      newErrors.password = 'Password is required';
+    } else if (formData.password.length < 6) {
+      newErrors.password = 'Password must be at least 6 characters';
+    }
+
+    if (!isLogin && formData.password !== formData.confirmPassword) {
+      newErrors.confirmPassword = 'Passwords do not match';
+    }
+
+    setAuthErrors(newErrors);
+    return Object.keys(newErrors).length === 0;
+  };
+
+  const handleAuthSubmit = async (e) => {
+    e.preventDefault();
+    
+    if (validateAuthForm()) {
+      try {
+        setAuthLoading(true);
+        
+        if (isLogin) {
+          const userCredential = await signInWithEmailAndPassword(
+            auth, 
+            formData.email, 
+            formData.password
+          );
+          
+          const userDoc = await getDoc(doc(db, 'users', userCredential.user.uid));
+          setCurrentUser({
+            uid: userCredential.user.uid,
+            email: userCredential.user.email,
+            name: userDoc.data().name
+          });
+          
+        } else {
+          const userCredential = await createUserWithEmailAndPassword(
+            auth, 
+            formData.email, 
+            formData.password
+          );
+          
+          await setDoc(doc(db, 'users', userCredential.user.uid), {
+            name: formData.name,
+            email: formData.email,
+            createdAt: serverTimestamp()
+          });
+          
+          setCurrentUser({
+            uid: userCredential.user.uid,
+            email: userCredential.user.email,
+            name: formData.name
+          });
+        }
+        
+        setIsAuthenticated(true);
+        setShowSuccessAnimation(true);
+        setTimeout(() => setShowSuccessAnimation(false), 1000);
+        
+      } catch (error) {
+        console.error('Auth error:', error);
+        setAuthErrors({ 
+          email: error.code === 'auth/email-already-in-use' ? 'Email already in use' :
+                 error.code === 'auth/invalid-email' ? 'Invalid email' :
+                 error.code === 'auth/user-not-found' ? 'User not found' :
+                 error.code === 'auth/wrong-password' ? 'Wrong password' :
+                 'Authentication failed' 
+        });
+      } finally {
+        setAuthLoading(false);
+      }
+    }
+  };
+
+  const handleInputChange = (e) => {
+    const { name, value } = e.target;
+    setFormData(prev => ({
+      ...prev,
+      [name]: value
+    }));
+    if (authErrors[name]) {
+      setAuthErrors(prev => ({
+        ...prev,
+        [name]: ''
+      }));
+    }
+  };
+
+  const handleLogout = async () => {
+    try {
+      await signOut(auth);
+      setIsAuthenticated(false);
+      setCurrentUser(null);
+      setCurrentStep(1);
+      setTimetableType('');
+      setTimetableData({
+        name: '',
+        timeSlots: [],
+        activities: [],
+        constraints: []
+      });
+      setGeneratedTimetable(null);
+      setConflicts([]);
+      setFormData({
+        name: '',
+        email: '',
+        password: '',
+        confirmPassword: ''
+      });
+    } catch (error) {
+      console.error('Logout error:', error);
+    }
+  };
+
+  // Timetable Functions
   const handleTypeSelection = (type) => {
     setTimetableType(type);
     setCurrentStep(2);
@@ -138,7 +317,6 @@ const TimetableGenerator = () => {
         activities: [...prev.activities, newActivity]
       }));
       
-      // Reset form
       setCurrentActivity({
         name: '',
         duration: 1,
@@ -171,7 +349,6 @@ const TimetableGenerator = () => {
     }));
   };
 
-  // Conflict Detection Function
   const detectConflicts = (schedule) => {
     const detectedConflicts = [];
     
@@ -232,7 +409,6 @@ const TimetableGenerator = () => {
     return detectedConflicts;
   };
 
-  // Greedy Algorithm Implementation
   const greedyScheduler = (activities, timeSlots, workingDays) => {
     const schedule = {};
     workingDays.forEach(day => {
@@ -381,34 +557,282 @@ const TimetableGenerator = () => {
     return hasConflict ? <AlertCircle className="w-4 h-4 text-red-500 ml-1 animate-pulse" /> : null;
   };
 
-  const exportTimetable = () => {
+  const exportTimetable = async () => {
     const exportData = {
       name: timetableData.name,
       type: timetableType,
       schedule: generatedTimetable,
       activities: timetableData.activities,
-      timeSlots: timetableData.timeSlots
+      timeSlots: timetableData.timeSlots,
+      userId: currentUser.uid,
+      userEmail: currentUser.email,
+      createdAt: serverTimestamp()
     };
     
-    const dataStr = JSON.stringify(exportData, null, 2);
-    const dataUri = 'data:application/json;charset=utf-8,'+ encodeURIComponent(dataStr);
-    
-    const exportFileDefaultName = `${timetableData.name || 'timetable'}_${new Date().toISOString().split('T')[0]}.json`;
-    
-    const linkElement = document.createElement('a');
-    linkElement.setAttribute('href', dataUri);
-    linkElement.setAttribute('download', exportFileDefaultName);
-    linkElement.click();
+    try {
+      await addDoc(collection(db, 'timetables'), exportData);
+      
+      const dataStr = JSON.stringify(exportData, null, 2);
+      const dataUri = 'data:application/json;charset=utf-8,'+ encodeURIComponent(dataStr);
+      
+      const exportFileDefaultName = `${timetableData.name || 'timetable'}_${new Date().toISOString().split('T')[0]}.json`;
+      
+      const linkElement = document.createElement('a');
+      linkElement.setAttribute('href', dataUri);
+      linkElement.setAttribute('download', exportFileDefaultName);
+      linkElement.click();
+      
+      alert('Timetable saved successfully!');
+    } catch (error) {
+      console.error('Error saving timetable:', error);
+      alert('Error saving timetable. Please try again.');
+    }
   };
 
+  // Authentication Page
+  if (!isAuthenticated) {
+    return (
+      <div className={`min-h-screen flex items-center justify-center transition-all duration-500 ${
+        darkMode 
+          ? 'bg-gradient-to-br from-gray-900 via-gray-800 to-gray-900' 
+          : 'bg-gradient-to-br from-blue-50 via-indigo-50 to-purple-50'
+      }`}>
+        {/* Dark Mode Toggle */}
+        <div className="absolute top-4 right-4 z-50">
+          <button
+            onClick={() => setDarkMode(!darkMode)}
+            className={`p-3 rounded-full transition-all duration-300 transform hover:scale-110 ${
+              darkMode 
+                ? 'bg-gray-800 text-yellow-400 hover:bg-gray-700 shadow-lg shadow-yellow-400/20' 
+                : 'bg-white text-gray-800 hover:bg-gray-100 shadow-lg shadow-gray-400/20'
+            }`}
+          >
+            {darkMode ? <Sun className="w-6 h-6" /> : <Moon className="w-6 h-6" />}
+          </button>
+        </div>
+
+        <div className={`w-full max-w-md p-8 m-4 rounded-2xl shadow-2xl transition-all duration-300 ${
+          darkMode 
+            ? 'bg-gray-800/90 backdrop-blur-lg border border-gray-700' 
+            : 'bg-white/90 backdrop-blur-lg'
+        } ${showSuccessAnimation ? 'transform scale-105' : ''}`}>
+          {/* Header */}
+          <div className="text-center mb-8">
+            <div className="flex items-center justify-center mb-4">
+              <Sparkles className={`w-8 h-8 ${darkMode ? 'text-purple-400' : 'text-purple-600'} animate-pulse`} />
+              <h1 className={`text-3xl font-bold ml-2 bg-gradient-to-r ${
+                darkMode 
+                  ? 'from-blue-400 via-purple-400 to-pink-400' 
+                  : 'from-blue-600 via-purple-600 to-pink-600'
+              } bg-clip-text text-transparent`}>
+                Smart Timetable
+              </h1>
+            </div>
+            <p className={`${darkMode ? 'text-gray-300' : 'text-gray-600'}`}>
+              {isLogin ? 'Welcome back!' : 'Create your account'}
+            </p>
+          </div>
+
+          {/* Toggle Buttons */}
+          <div className={`flex rounded-lg p-1 mb-6 ${darkMode ? 'bg-gray-700' : 'bg-gray-100'}`}>
+            <button
+              onClick={() => {
+                setIsLogin(true);
+                setAuthErrors({});
+              }}
+              className={`flex-1 py-2 px-4 rounded-md font-semibold transition-all duration-200 ${
+                isLogin
+                  ? 'bg-gradient-to-r from-blue-500 to-purple-500 text-white shadow-lg'
+                  : darkMode ? 'text-gray-300' : 'text-gray-600'
+              }`}
+            >
+              <LogIn className="w-4 h-4 inline mr-2" />
+              Login
+            </button>
+            <button
+              onClick={() => {
+                setIsLogin(false);
+                setAuthErrors({});
+              }}
+              className={`flex-1 py-2 px-4 rounded-md font-semibold transition-all duration-200 ${
+                !isLogin
+                  ? 'bg-gradient-to-r from-blue-500 to-purple-500 text-white shadow-lg'
+                  : darkMode ? 'text-gray-300' : 'text-gray-600'
+              }`}
+            >
+              <UserPlus className="w-4 h-4 inline mr-2" />
+              Register
+            </button>
+          </div>
+
+          {/* Form Fields */}
+          <form onSubmit={handleAuthSubmit} className="space-y-4">
+            {!isLogin && (
+              <div>
+                <label className={`block text-sm font-medium mb-2 ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>
+                  Full Name
+                </label>
+                <div className="relative">
+                  <User className={`absolute left-3 top-1/2 transform -translate-y-1/2 w-5 h-5 ${
+                    darkMode ? 'text-gray-400' : 'text-gray-500'
+                  }`} />
+                  <input
+                    type="text"
+                    name="name"
+                    value={formData.name}
+                    onChange={handleInputChange}
+                    className={`w-full pl-10 pr-4 py-3 rounded-lg transition-all duration-200 ${
+                      darkMode 
+                        ? 'bg-gray-700 text-white border border-gray-600 focus:border-purple-400' 
+                        : 'bg-white text-gray-800 border-2 border-gray-200 focus:border-blue-500'
+                    } focus:ring-4 focus:ring-opacity-20 focus:ring-blue-500 ${
+                      authErrors.name ? 'border-red-500' : ''
+                    }`}
+                    placeholder="Enter your full name"
+                  />
+                </div>
+                {authErrors.name && <p className="text-red-500 text-sm mt-1">{authErrors.name}</p>}
+              </div>
+            )}
+
+            <div>
+              <label className={`block text-sm font-medium mb-2 ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>
+                Email Address
+              </label>
+              <div className="relative">
+                <Mail className={`absolute left-3 top-1/2 transform -translate-y-1/2 w-5 h-5 ${
+                  darkMode ? 'text-gray-400' : 'text-gray-500'
+                }`} />
+                <input
+                  type="email"
+                  name="email"
+                  value={formData.email}
+                  onChange={handleInputChange}
+                  className={`w-full pl-10 pr-4 py-3 rounded-lg transition-all duration-200 ${
+                    darkMode 
+                      ? 'bg-gray-700 text-white border border-gray-600 focus:border-purple-400' 
+                      : 'bg-white text-gray-800 border-2 border-gray-200 focus:border-blue-500'
+                  } focus:ring-4 focus:ring-opacity-20 focus:ring-blue-500 ${
+                    authErrors.email ? 'border-red-500' : ''
+                  }`}
+                  placeholder="Enter your email"
+                />
+              </div>
+              {authErrors.email && <p className="text-red-500 text-sm mt-1">{authErrors.email}</p>}
+            </div>
+
+            <div>
+              <label className={`block text-sm font-medium mb-2 ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>
+                Password
+              </label>
+              <div className="relative">
+                <Lock className={`absolute left-3 top-1/2 transform -translate-y-1/2 w-5 h-5 ${
+                  darkMode ? 'text-gray-400' : 'text-gray-500'
+                }`} />
+                <input
+                  type={showPassword ? 'text' : 'password'}
+                  name="password"
+                  value={formData.password}
+                  onChange={handleInputChange}
+                  className={`w-full pl-10 pr-12 py-3 rounded-lg transition-all duration-200 ${
+                    darkMode 
+                      ? 'bg-gray-700 text-white border border-gray-600 focus:border-purple-400' 
+                      : 'bg-white text-gray-800 border-2 border-gray-200 focus:border-blue-500'
+                  } focus:ring-4 focus:ring-opacity-20 focus:ring-blue-500 ${
+                    authErrors.password ? 'border-red-500' : ''
+                  }`}
+                  placeholder="Enter your password"
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowPassword(!showPassword)}
+                  className={`absolute right-3 top-1/2 transform -translate-y-1/2 ${
+                    darkMode ? 'text-gray-400 hover:text-gray-300' : 'text-gray-500 hover:text-gray-700'
+                  }`}
+                >
+                  {showPassword ? <EyeOff className="w-5 h-5" /> : <Eye className="w-5 h-5" />}
+                </button>
+              </div>
+              {authErrors.password && <p className="text-red-500 text-sm mt-1">{authErrors.password}</p>}
+            </div>
+
+            {!isLogin && (
+              <div>
+                <label className={`block text-sm font-medium mb-2 ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>
+                  Confirm Password
+                </label>
+                <div className="relative">
+                  <Lock className={`absolute left-3 top-1/2 transform -translate-y-1/2 w-5 h-5 ${
+                    darkMode ? 'text-gray-400' : 'text-gray-500'
+                  }`} />
+                  <input
+                    type={showPassword ? 'text' : 'password'}
+                    name="confirmPassword"
+                    value={formData.confirmPassword}
+                    onChange={handleInputChange}
+                    className={`w-full pl-10 pr-4 py-3 rounded-lg transition-all duration-200 ${
+                      darkMode 
+                        ? 'bg-gray-700 text-white border border-gray-600 focus:border-purple-400' 
+                        : 'bg-white text-gray-800 border-2 border-gray-200 focus:border-blue-500'
+                    } focus:ring-4 focus:ring-opacity-20 focus:ring-blue-500 ${
+                      authErrors.confirmPassword ? 'border-red-500' : ''
+                    }`}
+                    placeholder="Confirm your password"
+                  />
+                </div>
+                {authErrors.confirmPassword && <p className="text-red-500 text-sm mt-1">{authErrors.confirmPassword}</p>}
+              </div>
+            )}
+
+            <button
+              type="submit"
+              disabled={authLoading}
+              className="w-full py-3 bg-gradient-to-r from-blue-500 to-purple-500 text-white font-semibold rounded-lg hover:shadow-lg transition-all duration-200 transform hover:scale-105 mt-6 disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              {authLoading ? 'Please wait...' : (isLogin ? 'Login' : 'Create Account')}
+            </button>
+          </form>
+
+          {isLogin && (
+            <div className="mt-4 text-center">
+              <button className={`text-sm ${darkMode ? 'text-purple-400 hover:text-purple-300' : 'text-blue-600 hover:text-blue-700'}`}>
+                Forgot password?
+              </button>
+            </div>
+          )}
+        </div>
+      </div>
+    );
+  }
+
+  if (authLoading) {
+    return (
+      <div className={`min-h-screen flex items-center justify-center ${
+        darkMode 
+          ? 'bg-gradient-to-br from-gray-900 via-gray-800 to-gray-900' 
+          : 'bg-gradient-to-br from-blue-50 via-indigo-50 to-purple-50'
+      }`}>
+        <div className="text-center">
+          <RefreshCw className="w-12 h-12 animate-spin text-purple-500 mx-auto mb-4" />
+          <p className={darkMode ? 'text-gray-300' : 'text-gray-600'}>Loading...</p>
+        </div>
+      </div>
+    );
+  }
+
+  // Timetable Generator (shown after authentication)
   return (
     <div className={`min-h-screen transition-all duration-500 ${
       darkMode 
         ? 'bg-gradient-to-br from-gray-900 via-gray-800 to-gray-900' 
         : 'bg-gradient-to-br from-blue-50 via-indigo-50 to-purple-50'
     }`}>
-      {/* Dark Mode Toggle */}
-      <div className="absolute top-4 right-4 z-50">
+      {/* Dark Mode Toggle & User Info */}
+      <div className="absolute top-4 right-4 z-50 flex items-center gap-4">
+        <div className={`px-4 py-2 rounded-full ${darkMode ? 'bg-gray-800 text-white' : 'bg-white text-gray-800'} shadow-lg flex items-center gap-2`}>
+          <User className="w-5 h-5" />
+          <span className="font-semibold">{currentUser.name}</span>
+        </div>
         <button
           onClick={() => setDarkMode(!darkMode)}
           className={`p-3 rounded-full transition-all duration-300 transform hover:scale-110 ${
@@ -418,6 +842,16 @@ const TimetableGenerator = () => {
           }`}
         >
           {darkMode ? <Sun className="w-6 h-6" /> : <Moon className="w-6 h-6" />}
+        </button>
+        <button
+          onClick={handleLogout}
+          className={`p-3 rounded-full transition-all duration-300 transform hover:scale-110 ${
+            darkMode 
+              ? 'bg-red-800 text-white hover:bg-red-700 shadow-lg' 
+              : 'bg-red-500 text-white hover:bg-red-600 shadow-lg'
+          }`}
+        >
+          <LogOut className="w-6 h-6" />
         </button>
       </div>
 
@@ -521,7 +955,7 @@ const TimetableGenerator = () => {
             </div>
           )}
 
-          {/* Step 2: Enhanced Configuration */}
+          {/* Step 2: Configuration */}
           {currentStep === 2 && (
             <div className="animate-fadeIn">
               <h2 className={`text-3xl font-bold mb-8 ${darkMode ? 'text-white' : 'text-gray-800'}`}>
@@ -592,7 +1026,7 @@ const TimetableGenerator = () => {
                   )}
                 </div>
 
-                {/* Enhanced Optimization Settings */}
+                {/* Optimization Settings */}
                 <div className={`p-6 rounded-xl ${darkMode ? 'bg-gray-700' : 'bg-gradient-to-r from-blue-50 to-purple-50'}`}>
                   <div className="flex items-center mb-4">
                     <Info className={`w-5 h-5 mr-2 ${darkMode ? 'text-purple-400' : 'text-blue-600'}`} />
@@ -660,7 +1094,7 @@ const TimetableGenerator = () => {
             </div>
           )}
 
-          {/* Step 3: Enhanced Activities */}
+          {/* Step 3: Activities - Continuing in next message due to length */}
           {currentStep === 3 && (
             <div className="animate-fadeIn">
               <h2 className={`text-3xl font-bold mb-8 ${darkMode ? 'text-white' : 'text-gray-800'}`}>
@@ -768,6 +1202,7 @@ const TimetableGenerator = () => {
                         {priorityLevels.map(priority => (
                           <button
                             key={priority}
+                            type="button"
                             onClick={() => setCurrentActivity(prev => ({...prev, priority}))}
                             className={`flex-1 py-2 px-3 rounded-lg font-medium transition-all duration-200 ${
                               currentActivity.priority === priority
@@ -791,9 +1226,10 @@ const TimetableGenerator = () => {
                         Color Theme
                       </label>
                       <div className="flex gap-2">
-                        {colors.map(color => (
+                        {colors.slice(0, 6).map(color => (
                           <button
                             key={color.name}
+                            type="button"
                             onClick={() => setCurrentActivity(prev => ({...prev, color: color.name}))}
                             className={`w-10 h-10 rounded-lg ${darkMode ? color.dark : color.light} ${color.border} border-2 transition-all duration-200 ${
                               currentActivity.color === color.name ? 'ring-2 ring-offset-2 ring-purple-500 scale-110' : ''
@@ -833,10 +1269,11 @@ const TimetableGenerator = () => {
                         {days.map(day => (
                           <button
                             key={day}
+                            type="button"
                             onClick={() => togglePreference('preferredDays', day)}
                             className={`px-4 py-2 rounded-lg transition-all duration-200 ${
                               currentActivity.preferredDays.includes(day)
-                                ? 'bg-gradient-to-r from-green-500 to-green-600 text-black shadow-lg transform scale-105'
+                                ? 'bg-gradient-to-r from-green-500 to-green-600 text-white shadow-lg transform scale-105'
                                 : darkMode
                                   ? 'bg-gray-600 text-gray-300 hover:bg-gray-500'
                                   : 'bg-white text-gray-700 border border-gray-300 hover:bg-gray-50'
@@ -856,6 +1293,7 @@ const TimetableGenerator = () => {
                         {timetableData.timeSlots.map(time => (
                           <button
                             key={time}
+                            type="button"
                             onClick={() => togglePreference('preferredTimes', time)}
                             className={`px-3 py-1 text-sm rounded-lg transition-all duration-200 ${
                               currentActivity.preferredTimes.includes(time)
@@ -879,6 +1317,7 @@ const TimetableGenerator = () => {
                         {timetableData.timeSlots.map(time => (
                           <button
                             key={time}
+                            type="button"
                             onClick={() => togglePreference('avoidTimes', time)}
                             className={`px-3 py-1 text-sm rounded-lg transition-all duration-200 ${
                               currentActivity.avoidTimes.includes(time)
@@ -924,7 +1363,7 @@ const TimetableGenerator = () => {
                           <div className="flex justify-between items-start">
                             <div className="flex-1">
                               <div className="flex items-center mb-2">
-                                <h4 className={`font-bold text-lg ${darkMode ? 'text-black' : 'text-gray-800'}`}>
+                                <h4 className={`font-bold text-lg ${darkMode ? 'text-white' : 'text-gray-800'}`}>
                                   {activity.name}
                                 </h4>
                                 <span className={`ml-3 px-2 py-1 rounded text-xs font-semibold ${
@@ -942,40 +1381,12 @@ const TimetableGenerator = () => {
                                   </span>
                                 )}
                               </div>
-                              <div className={`text-sm ${darkMode ? 'text-gray-300' : 'text-gray-600'} space-y-1`}>
+                              <div className={`text-sm ${darkMode ? 'text-gray-200' : 'text-gray-700'} space-y-1`}>
                                 <div>⏱️ Duration: {activity.duration} hour{activity.duration > 1 ? 's' : ''}</div>
                                 {activity.instructor && <div>👤 Instructor: {activity.instructor}</div>}
                                 {activity.room && <div>📍 Room: {activity.room}</div>}
-                                {activity.description && <div>📝 {activity.description}</div>}
-                                {activity.preferredDays.length > 0 && (
-                                  <div className="text-white">
-                                    ✓ Preferred days: {activity.preferredDays.join(', ')}
-                                  </div>
-                                )}
-                                {activity.preferredTimes.length > 0 && (
-                                  <div className="text-white">
-                                    ✓ Preferred times: {activity.preferredTimes.join(', ')}
-                                  </div>
-                                )}
-                                {activity.avoidTimes.length > 0 && (
-                                  <div className="text-white">
-                                    ✗ Avoid times: {activity.avoidTimes.join(', ')}
-                                  </div>
-                                )}
                               </div>
                             </div>
-                            <button
-                              onClick={() => {
-                                setExpandedActivity(expandedActivity === activity.id ? null : activity.id);
-                              }}
-                              className={`ml-4 p-2 rounded-lg transition-all duration-200 ${
-                                darkMode 
-                                  ? 'text-gray-400 hover:text-white hover:bg-gray-600' 
-                                  : 'text-gray-600 hover:text-gray-800 hover:bg-gray-200'
-                              }`}
-                            >
-                              {expandedActivity === activity.id ? <ChevronUp /> : <ChevronDown />}
-                            </button>
                             <button
                               onClick={() => removeActivity(activity.id)}
                               className="ml-2 p-2 text-red-500 hover:bg-red-100 rounded-lg transition-all duration-200"
@@ -983,20 +1394,6 @@ const TimetableGenerator = () => {
                               <X className="w-5 h-5" />
                             </button>
                           </div>
-                          {expandedActivity === activity.id && (
-                            <div className={`mt-4 pt-4 border-t ${darkMode ? 'border-gray-600' : 'border-gray-300'}`}>
-                              <button
-                                onClick={() => {
-                                  setCurrentActivity({...activity});
-                                  removeActivity(activity.id);
-                                }}
-                                className="px-4 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 transition-all duration-200"
-                              >
-                                <Edit3 className="w-4 h-4 inline mr-2" />
-                                Edit Activity
-                              </button>
-                            </div>
-                          )}
                         </div>
                       ))}
                     </div>
@@ -1031,7 +1428,7 @@ const TimetableGenerator = () => {
             </div>
           )}
 
-          {/* Step 4: Enhanced Generated Timetable */}
+          {/* Step 4: Generated Timetable */}
           {currentStep === 4 && generatedTimetable && (
             <div className="animate-fadeIn">
               <div className="flex flex-col md:flex-row justify-between items-start md:items-center mb-6">
@@ -1154,12 +1551,12 @@ const TimetableGenerator = () => {
                                   {getConflictIcon(day, slot)}
                                 </div>
                                 {generatedTimetable[day][slot].instructor && (
-                                  <div className={`text-xs mt-1 ${darkMode ? 'text-gray-300' : 'text-gray-600'}`}>
+                                  <div className={`text-xs mt-1 ${darkMode ? 'text-gray-200' : 'text-gray-700'}`}>
                                     👤 {generatedTimetable[day][slot].instructor}
                                   </div>
                                 )}
                                 {generatedTimetable[day][slot].room && (
-                                  <div className={`text-xs ${darkMode ? 'text-gray-300' : 'text-gray-600'}`}>
+                                  <div className={`text-xs ${darkMode ? 'text-gray-200' : 'text-gray-700'}`}>
                                     📍 {generatedTimetable[day][slot].room}
                                   </div>
                                 )}
@@ -1264,4 +1661,4 @@ const TimetableGenerator = () => {
   );
 };
 
-export default TimetableGenerator;
+export default IntegratedTimetableApp;
